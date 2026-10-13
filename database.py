@@ -64,7 +64,7 @@ class Database:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("INSERT INTO logs (message, level, timestamp) VALUES (?, ?, ?)",
-                               (message, level, datetime.now().isoformat()))
+                (message, level, datetime.now().isoformat()))
                 conn.commit()
         except sqlite3.Error as e:
             print(f"Failed to log to database: {e}")

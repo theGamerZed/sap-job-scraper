@@ -1,5 +1,6 @@
 """
-SAP Job Scraper - Collects job listings and extracts descriptions
+SAP Job Scraper - Collects job listings and extracts descriptions to feed to a local LLM to evaluate my chances of getting this job
+
 """
 
 from selenium import webdriver
@@ -12,7 +13,8 @@ from database import Database
 import time
 
 
-def setup_driver():
+# Create and update browser settings either headless or anything else
+def setup_driver(): 
     chrome_options = webdriver.ChromeOptions()
     chrome_options.add_argument("--ozone-platform=x11")
     chrome_options.add_argument("--no-sandbox")
@@ -21,6 +23,7 @@ def setup_driver():
     driver = webdriver.Chrome(options=chrome_options)
     return driver
 
+# Accept or reject cookies ... depending on the needs of the user
 def reject_cookies(driver):
     try:
         wait = WebDriverWait(driver, 5)
@@ -33,6 +36,7 @@ def reject_cookies(driver):
     except:
         print("Cookie dialog handled")
 
+# Get a list of all jobs and explore each job one after the other... 
 def scrape_job_listings(driver):
     """Scrape job listings from SAP careers search results"""
     url = (
@@ -76,6 +80,7 @@ def scrape_job_listings(driver):
     print(f"{'='*60}\n")
     return job_elements
 
+# Extract job details to feed to the AI ...
 def extract_job_description(driver, job):
     job_url = job[0]
     details = []
@@ -124,6 +129,7 @@ def extract_job_description(driver, job):
   
     return details
 
+# Once the job is evaluated by the model ... it can be saved to the database as a match 
 def save_job_to_db(db, job_data):
     db.add_job(
         job_url=job_data["url"],
@@ -134,6 +140,7 @@ def save_job_to_db(db, job_data):
         description=job_data["description"]
     )
 
+# Main function... 
 def main():
     print(f"{'='*60}")
     print("SAP JOB SCRAPER")
@@ -147,8 +154,7 @@ def main():
         if not jobs:
             print("No jobs found!")
             driver.save_screenshot("/tmp/scraper_debug.png")
-            return
-        print(jobs)
+            return False
         print(f"\n{'='*60}")
         print("STEP 2: EXTRACTING DESCRIPTIONS")
         print(f"{'='*60}\n")
