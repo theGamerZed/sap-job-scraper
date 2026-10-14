@@ -1,0 +1,42 @@
+
+{
+  "category": "SAP Finance / Data Analytics",
+  "job_types": [
+    "Werkstudent",
+    "Praktikum",
+    "Duales Studium"
+  ],
+  "requirements": {
+    "education": "Student in IT, business, or a related field",
+    "technical": [
+      "SAP",
+      "ERP systems",
+      "Data analytics",
+      "Software lifecycle"
+    ],
+    "business": [
+      "Corporate finance processes"
+    ],
+    "project_methods": [
+      "Planning and organization",
+      "Agile",
+      "DevOps"
+    ],
+    "soft_skills": [
+      "Analytical thinking",
+      "Problem solving",
+      "Teamwork",
+      "Independent work"
+    ],
+    "languages": [
+      "English",
+      "German"
+    ]
+  },
+  "evaluation_rules": {
+    "distinguish_required_from_preferred": true,
+    "flag_unknown_requirements": true,
+    "penalize_missing_skills_proportionally": true,
+    "invent_candidate_experience": false
+  }
+}
