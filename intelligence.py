@@ -145,94 +145,211 @@ class Job_validation(BaseModel):
   category: str
   job_types: list[str]
   requirements: Requirements
+class MatchScore(BaseModel):
+    """Score result for a job vs candidate profile matching"""
+    job_id: int
+    overall_score: int  # 0-100
+    match_level: Literal["high", "medium", "low", "no_match"]
+    matched_requirements: list[str]
+    missing_required: list[str]
+    missing_preferred: list[str]
+    analysis_notes: str
 
-job = Job(
-    title="SAP Finance / Data Analytics Working Student",
-    job_id=123456,
-    location="Walldorf, Germany",
-    description="""
-    We are looking for a working student to support our Finance and
-    Data Analytics team.
+def get_candidate_profile() -> CandidateProfile:
+    """Return the global candidate profile"""
+    return candidate
 
-    You are currently studying Computer Science, Business Informatics,
-    Business Administration, or a related field.
+def analyze_job_with_llm(job_title: str, job_id: int, location: str, description: str) -> Job_validation:
+    #Send a job description to the LLM and get structured requirements analysis. 
+    job = Job(
+        title=job_title,
+        job_id=job_id,
+        location=location,
+        description=description
+    )
 
-    You should have an interest in SAP ERP systems and data analytics.
-    Experience with SAP is preferred.
+    response = chat(
+        model="qwen3.5:0.8b",
+        messages=[
+            {
+                "role": "system",
+                "content": """
+                Analyze the job description.
+                Extract the requirements and classify each requirement as:
+                - required: explicitly required by the job
+                - preferred: explicitly described as preferred, desirable, a plus, or advantageous
+                - unknown: the job mentions the concept but does not make its importance clear
+                Do not invent candidate experience.
+                The category describes the type of job, for example: SAP Finance / Data Analytics.
+                "category" must NOT contain required, preferred, or unknown.
+                """
+            },
+            {
+                "role": "user",
+                "content": job.description
+            }
+        ],
+        format=Job_validation.model_json_schema()
+    )
 
-    You will support planning, organization and agile project work.
-    Knowledge of DevOps and software lifecycle processes is a plus.
+    content = response.message.content
 
-    Strong analytical thinking, problem solving and teamwork skills
-    are expected.
+    if content is None:
+        raise ValueError("LLM returned no content")
 
-    Fluency in English is required. German is a plus.
-    """
-)
+    return Job_validation.model_validate_json(content)
 
-# response: ChatResponse = chat(
-#   model='qwen3:4b',
-#   messages=[
-#     {
-#       'role': 'user',
-#       'content': 'Why is the sky blue?',
-#     },
-#   ],
+def calculate_match_score(job_analysis: Job_validation, candidate_profile: CandidateProfile, job_id: int) -> MatchScore:
+    # Calculate how well a job matches the candidate profile based on the LLM analysis.
+    matched = []
+    missing_required = []
+    missing_preferred = []
+    
+    def check_match(requirement_name: str, candidate_items: list[str]) -> bool:
+        req_lower = requirement_name.lower()
+        for cand_item in candidate_items:
+            cand_lower = cand_item.lower()
+            if req_lower in cand_lower or cand_lower in req_lower:
+                return True
+            req_words = set(req_lower.split())
+            cand_words = set(cand_lower.split())
+            if req_words & cand_words:
+                return True
+        return False
+    
+    all_requirements = []
+    for req in job_analysis.requirements.education:
+        all_requirements.append((req.name, req.status))
+    for req in job_analysis.requirements.technical_skills:
+        all_requirements.append((req.name, req.status))
+    for req in job_analysis.requirements.experience:
+        all_requirements.append((req.name, req.status))
+    for req in job_analysis.requirements.technologies:
+        all_requirements.append((req.name, req.status))
+    for req in job_analysis.requirements.skills:
+        all_requirements.append((req.name, req.status))
+    for req in job_analysis.requirements.languages:
+        all_requirements.append((req.name, req.status))
+    
+    all_candidate_items = (
+        candidate_profile.education + candidate_profile.technical_skills +
+        candidate_profile.technologies + candidate_profile.skills +
+        candidate_profile.languages + candidate_profile.experience
+    )
+    
+    required_count = 0
+    preferred_count = 0
+    matched_count = 0
+    
+    for req_name, req_status in all_requirements:
+        is_matched = check_match(req_name, all_candidate_items)
+        if is_matched:
+            matched.append(req_name)
+            matched_count += 1
+        else:
+            if req_status == "required":
+                missing_required.append(req_name)
+                required_count += 1
+            elif req_status == "preferred":
+                missing_preferred.append(req_name)
+                preferred_count += 1
+    
+    total_requirements = len(all_requirements)
+    if total_requirements == 0:
+        overall_score = 50
+    else:
+        score = (matched_count * 10) - (required_count * 5) - (preferred_count * 2)
+        overall_score = max(0, min(100, 50 + score))
+    
+    if overall_score >= 80:
+        match_level = "high"
+    elif overall_score >= 50:
+        match_level = "medium"
+    elif overall_score >= 20:
+        match_level = "low"
+    else:
+        match_level = "no_match"
+    
+    notes = []
+    if matched:
+        notes.append(f"Matched: {', '.join(matched[:5])}")
+    if missing_required:
+        notes.append(f"Missing required: {', '.join(missing_required[:3])}")
+    if missing_preferred:
+        notes.append(f"Missing preferred: {', '.join(missing_preferred[:3])}")
+    
+    return MatchScore(
+        overall_score=overall_score,
+        job_id= job_id,
+        match_level=match_level,
+        matched_requirements=matched,
+        missing_required=missing_required,
+        missing_preferred=missing_preferred,
+        analysis_notes=" | ".join(notes) if notes else "No analysis available"
+    )
+
+def analyze_and_score_job(job_title: str, job_id: int, location: str, description: str) -> MatchScore:
+    # Complete workflow: analyze job with LLM and calculate match score.
+    job_analysis = analyze_job_with_llm(job_title, job_id, location, description)
+    match_score = calculate_match_score(job_analysis, candidate, job_id)
+    return match_score
+
+# job = Job(
+#     title="SAP Finance / Data Analytics Working Student",
+#     job_id=123456,
+#     location="Walldorf, Germany",
+#     description="""
+#     We are looking for a working student to support our Finance and
+#     Data Analytics team.
+
+#     You are currently studying Computer Science, Business Informatics,
+#     Business Administration, or a related field.
+
+#     You should have an interest in SAP ERP systems and data analytics.
+#     Experience with SAP is preferred.
+
+#     You will support planning, organization and agile project work.
+#     Knowledge of DevOps and software lifecycle processes is a plus.
+
+#     Strong analytical thinking, problem solving and teamwork skills
+#     are expected.
+
+#     Fluency in English is required. German is a plus.
+#     """
 # )
-# response = chat(
-#     model="qwen3.5:0.8b",
-#     messages=[
-#         {
-#             "role": "system",
-#             "content": """
-#             Analyze the job description and extract its requirements.
+def get_job_details(job):
+    response = chat(
+        model="qwen3:4b",
+        messages=[
+            {
+                "role": "system",
+                "content": """
+                Analyze the job description.
 
-#             Distinguish between required and preferred requirements where
-#             possible.
+                Extract the job requirements and classify each requirement as:
 
-#             Do not invent information that is not present in the job description.
-#             """
-#         },
-#         {
-#             "role": "user",
-#             "content": job.description
-#         }
-#     ],
-#     format=Job_validation.model_json_schema()
-# )
-# #print(response['message']['content'])
-# # or access fields directly from the response object
+                - required: explicitly required by the job
+                - preferred: explicitly described as preferred, desirable,
+                a plus, or advantageous
+                - unknown: the job mentions the concept but does not make
+                its importance clear
 
+                Do not invent candidate experience.
 
-response = chat(
-    model="qwen3:4b",
-    messages=[
-        {
-            "role": "system",
-            "content": """
-            Analyze the job description.
+                The category describes the type of job, for example:
+                SAP Finance / Data Analytics.
 
-            Extract the requirements and classify each requirement as:
+                "category" must NOT contain required, preferred, or unknown.
+                """
+            },
+            {
+                "role": "user",
+                "content": job.description
+            }
+        ],
+        format=Job_validation.model_json_schema()
+    )
+    return (response.message.content)
+    print("got data")
+    return "hello"
 
-            - required: explicitly required by the job
-            - preferred: explicitly described as preferred, desirable,
-              a plus, or advantageous
-            - unknown: the job mentions the concept but does not make
-              its importance clear
-
-            Do not invent candidate experience.
-
-            The category describes the type of job, for example:
-            SAP Finance / Data Analytics.
-
-            "category" must NOT contain required, preferred, or unknown.
-            """
-        },
-        {
-            "role": "user",
-            "content": job.description
-        }
-    ],
-    format=Job_validation.model_json_schema()
-)
-print(response.message.content)

@@ -11,7 +11,18 @@ from selenium.common.exceptions import NoSuchElementException, TimeoutException
 from urllib.parse import urljoin
 from database import Database
 import time
+from intelligence import analyze_and_score_job, get_job_details,MatchScore, Job 
+import json
+import sqlite3
 
+class JobStatus:
+    SCRAPED = "scraped"
+    ANALYZING = "analyzing"
+    MATCHED = "matched"
+    HIGH_MATCH = "high_match"
+    MEDIUM_MATCH = "medium_match"
+    LOW_MATCH = "low_match"
+    NO_MATCH = "no_match"
 
 # Create and update browser settings either headless or anything else
 def setup_driver(): 
@@ -68,7 +79,8 @@ def scrape_job_listings(driver):
             )
             job_title = link_element.text.strip()
             job_link = urljoin(driver.current_url, link_element.get_attribute("href"))
-            job = [job_link, job_title]
+            description = ""
+            job = [job_link, job_title,description]
             job_elements.append(job)
             print(job)
             counter += 1
@@ -140,8 +152,95 @@ def save_job_to_db(db, job_data):
         description=job_data["description"]
     )
 
+# Update a job's status and details in the database based on match score.
+def update_job_match_score(db: Database, job_id: str, match_score: MatchScore):
+    status_map = {
+        "high": JobStatus.HIGH_MATCH,
+        "medium": JobStatus.MEDIUM_MATCH,
+        "low": JobStatus.LOW_MATCH,
+        "no_match": JobStatus.NO_MATCH
+    }
+    status = status_map.get(match_score.match_level, JobStatus.MATCHED)
+    
+    details = json.dumps({
+        "overall_score": match_score.overall_score,
+        "match_level": match_score.match_level,
+        "matched_requirements": match_score.matched_requirements,
+        "missing_required": match_score.missing_required,
+        "missing_preferred": match_score.missing_preferred,
+        "analysis_notes": match_score.analysis_notes
+    })
+    
+    with db._get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE jobs 
+            SET status = ?, details = ?, timestamp = datetime('now')
+            WHERE job_id = ?
+        """, (status, details, job_id))
+        conn.commit()
+    
+    db.log(f"Job {job_id} updated: {status} (score: {match_score.overall_score})", "INFO")
+    return status
+
+# Get all jobs that haven't been matched yet (status is 'scraped').
+def get_unmatched_jobs(db: Database):
+    with db._get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT * FROM jobs 
+            WHERE status = 'scraped' 
+            ORDER BY timestamp DESC
+        """)
+        return [dict(row) for row in cursor.fetchall()]
+
+# Run only the analysis step - for jobs that are already scraped but not analyzed.
+def run_analysis_only(db: Database):
+    print(f"\n{'='*70}")
+    print("ANALYSIS ONLY MODE - Jobs already in DB will be analyzed")
+    print(f"{'='*70}")
+    
+    unmatched_jobs = get_unmatched_jobs(db)
+    
+    if not unmatched_jobs:
+        print("No unmatched jobs to analyze!")
+        return
+    
+    print(f"Found {len(unmatched_jobs)} jobs to analyze\n")
+    
+    for job in unmatched_jobs:   
+        db.update_job_status(job['job_id'], JobStatus.ANALYZING)
+        try:
+            match_score = analyze_and_score_job(
+                job_title=job['job_title'],
+                job_id=job['job_id'],
+                location=job['location'],
+                description=job['description']
+            )
+            status = update_job_match_score(db, job['job_id'], match_score)
+            
+            print(f"  → Score: {match_score.overall_score}/100 | Level: {match_score.match_level}")
+            print(f"  → Status: {status}")
+            
+        except Exception as e:
+            db.log(f"Error analyzing job {job['job_id']}: {e}", "ERROR")
+            db.update_job_status(job['job_id'], "error")
+        
+        time.sleep(1)
+
+
+    
 # Main function... 
 def main():
+    """
+Integration Pipeline - Connects scraper, LLM intelligence, and database into a unified workflow.
+
+Workflow:
+1. Scrape jobs from SAP careers
+2. Analyze jobs with LLM and calculate match scores
+3. Update job status in database based on match quality
+"""
     print(f"{'='*60}")
     print("SAP JOB SCRAPER")
     print(f"{'='*60}")
@@ -161,6 +260,7 @@ def main():
 
         for job in jobs:
             details = extract_job_description(driver,job)
+            time.sleep(1)
             job_data = {
                 "url": job[0],
                 "title": job[1],
@@ -168,8 +268,52 @@ def main():
                 "location": details[1],
                 "description": details[2],
             }
+            #print(f"{job_data["description"]}")
             save_job_to_db(db, job_data)
-            time.sleep(1)
+            
+            job_object = Job(
+                title = job_data["title"],
+                job_id = job_data["job_id"],
+                location = job_data["location"],
+                description = job_data["description"],
+            )
+            job_detail = get_job_details(job_object)
+            with db._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    UPDATE jobs 
+                    SET details = ?
+                    WHERE job_id = ?
+                """, ( job_detail, job_data["job_id"]))
+                conn.commit()
+
+        unmatched_jobs = get_unmatched_jobs(db)
+
+        if not unmatched_jobs:
+            print("No unmatched jobs to analyze!")
+        else:
+            print(f"Found {len(unmatched_jobs)} jobs to analyze")
+            for job in unmatched_jobs:                
+                db.update_job_status(job['job_id'], JobStatus.ANALYZING)
+                try:
+                    match_score = analyze_and_score_job(
+                        job_title=job['job_title'],
+                        job_id=job['job_id'],
+                        location=job['location'],
+                        description=job['description']
+                    )
+                    
+                    status = update_job_match_score(db, job['job_id'], match_score)
+                    
+                    print(f"  → Score: {match_score.overall_score}/100 | Level: {match_score.match_level}")
+                    print(f"  → Status: {status}")
+                    
+                except Exception as e:
+                    db.log(f"Error analyzing job {job['job_id']}: {e}", "ERROR")
+                    db.update_job_status(job['job_id'], "error")
+                
+                time.sleep(1)
+        
         
     except Exception as e:
         print(f"Error: {e}")
@@ -178,6 +322,7 @@ def main():
     finally:
         driver.quit()
 
-
 if __name__ == "__main__":
     main()
+
+
