@@ -1,6 +1,13 @@
 from ollama import chat
 from pydantic import BaseModel,Field
 from typing import Literal
+
+from google import genai
+import os
+from dotenv import load_dotenv
+load_dotenv()
+api_key = os.getenv("GEMINI_API_KEY")
+client = genai.Client(api_key=api_key)
 class Job(BaseModel):
     title: str
     job_id: int 
@@ -44,7 +51,6 @@ class CandidateProfile(BaseModel):
     experience: list[str]
     certifications: list[str]
     projects: list[str]
-
 
 candidate = CandidateProfile(
     education=[
@@ -159,46 +165,6 @@ def get_candidate_profile() -> CandidateProfile:
     """Return the global candidate profile"""
     return candidate
 
-def analyze_job_with_llm(job_title: str, job_id: int, location: str, description: str) -> Job_validation:
-    #Send a job description to the LLM and get structured requirements analysis. 
-    job = Job(
-        title=job_title,
-        job_id=job_id,
-        location=location,
-        description=description
-    )
-
-    response = chat(
-        model="qwen3.5:0.8b",
-        messages=[
-            {
-                "role": "system",
-                "content": """
-                Analyze the job description.
-                Extract the requirements and classify each requirement as:
-                - required: explicitly required by the job
-                - preferred: explicitly described as preferred, desirable, a plus, or advantageous
-                - unknown: the job mentions the concept but does not make its importance clear
-                Do not invent candidate experience.
-                The category describes the type of job, for example: SAP Finance / Data Analytics.
-                "category" must NOT contain required, preferred, or unknown.
-                """
-            },
-            {
-                "role": "user",
-                "content": job.description
-            }
-        ],
-        format=Job_validation.model_json_schema()
-    )
-
-    content = response.message.content
-
-    if content is None:
-        raise ValueError("LLM returned no content")
-
-    return Job_validation.model_validate_json(content)
-
 def calculate_match_score(job_analysis: Job_validation, candidate_profile: CandidateProfile, job_id: int) -> MatchScore:
     # Calculate how well a job matches the candidate profile based on the LLM analysis.
     matched = []
@@ -278,7 +244,7 @@ def calculate_match_score(job_analysis: Job_validation, candidate_profile: Candi
     if missing_preferred:
         notes.append(f"Missing preferred: {', '.join(missing_preferred[:3])}")
     
-    return MatchScore(
+    score_object =  MatchScore(
         overall_score=overall_score,
         job_id= job_id,
         match_level=match_level,
@@ -287,69 +253,41 @@ def calculate_match_score(job_analysis: Job_validation, candidate_profile: Candi
         missing_preferred=missing_preferred,
         analysis_notes=" | ".join(notes) if notes else "No analysis available"
     )
+    return score_object
 
-def analyze_and_score_job(job_title: str, job_id: int, location: str, description: str) -> MatchScore:
+def analyze_and_score_job(job: Job, extracted_requirements) -> MatchScore:
     # Complete workflow: analyze job with LLM and calculate match score.
-    job_analysis = analyze_job_with_llm(job_title, job_id, location, description)
-    match_score = calculate_match_score(job_analysis, candidate, job_id)
+    # Convert dict to Job_validation model if needed (e.g., when loaded from JSON string in DB)
+    if isinstance(extracted_requirements, dict):
+        job_analysis = Job_validation.model_validate(extracted_requirements)
+    else:
+        job_analysis = extracted_requirements
+    match_score = calculate_match_score(job_analysis, candidate, job.job_id)
     return match_score
 
-# job = Job(
-#     title="SAP Finance / Data Analytics Working Student",
-#     job_id=123456,
-#     location="Walldorf, Germany",
-#     description="""
-#     We are looking for a working student to support our Finance and
-#     Data Analytics team.
 
-#     You are currently studying Computer Science, Business Informatics,
-#     Business Administration, or a related field.
-
-#     You should have an interest in SAP ERP systems and data analytics.
-#     Experience with SAP is preferred.
-
-#     You will support planning, organization and agile project work.
-#     Knowledge of DevOps and software lifecycle processes is a plus.
-
-#     Strong analytical thinking, problem solving and teamwork skills
-#     are expected.
-
-#     Fluency in English is required. German is a plus.
-#     """
-# )
 def get_job_details(job):
-    response = chat(
-        model="qwen3:4b",
-        messages=[
+    response = client.interactions.create(
+        model = "gemini-3.5-flash-lite",
+        system_instruction="""
+            Analyze the job description.
+            Extract the requirements and classify each requirement as:
+            - required: explicitly required by the job
+            - preferred: explicitly described as preferred, desirable, a plus, or advantageous
+            - unknown: the job mentions the concept but does not make its importance clear
+            Do not invent candidate experience.
+            The category describes the type of job, for example: SAP Finance / Data Analytics.
+            "category" must NOT contain required, preferred, or unknown.
+        """,
+        input=[
             {
-                "role": "system",
-                "content": """
-                Analyze the job description.
-
-                Extract the job requirements and classify each requirement as:
-
-                - required: explicitly required by the job
-                - preferred: explicitly described as preferred, desirable,
-                a plus, or advantageous
-                - unknown: the job mentions the concept but does not make
-                its importance clear
-
-                Do not invent candidate experience.
-
-                The category describes the type of job, for example:
-                SAP Finance / Data Analytics.
-
-                "category" must NOT contain required, preferred, or unknown.
-                """
-            },
-            {
-                "role": "user",
-                "content": job.description
+                "type": "text",
+                "text": job.description
             }
         ],
-        format=Job_validation.model_json_schema()
+        response_format=Job_validation.model_json_schema(),
+        stream = False
     )
-    return (response.message.content)
-    print("got data")
-    return "hello"
-
+    if response.output_text is None:
+        raise ValueError("Gemini returned no text output")
+    return response.output_text

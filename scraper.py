@@ -212,12 +212,14 @@ def run_analysis_only(db: Database):
     for job in unmatched_jobs:   
         db.update_job_status(job['job_id'], JobStatus.ANALYZING)
         try:
-            match_score = analyze_and_score_job(
-                job_title=job['job_title'],
-                job_id=job['job_id'],
-                location=job['location'],
-                description=job['description']
+            job_object = Job(
+                title = job["title"],
+                job_id = job["job_id"],
+                location = job["location"],
+                description = job["description"],
             )
+            match_score = analyze_and_score_job(job_object,job["details"])
+                    
             status = update_job_match_score(db, job['job_id'], match_score)
             
             print(f"  → Score: {match_score.overall_score}/100 | Level: {match_score.match_level}")
@@ -229,8 +231,6 @@ def run_analysis_only(db: Database):
         
         time.sleep(1)
 
-
-    
 # Main function... 
 def main():
     """
@@ -268,7 +268,6 @@ Workflow:
                 "location": details[1],
                 "description": details[2],
             }
-            #print(f"{job_data["description"]}")
             save_job_to_db(db, job_data)
             
             job_object = Job(
@@ -293,28 +292,29 @@ Workflow:
             print("No unmatched jobs to analyze!")
         else:
             print(f"Found {len(unmatched_jobs)} jobs to analyze")
-            for job in unmatched_jobs:                
-                db.update_job_status(job['job_id'], JobStatus.ANALYZING)
+            
+            for j in unmatched_jobs:                
+                #db.update_job_status(job['job_id'], JobStatus.ANALYZING)
                 try:
-                    match_score = analyze_and_score_job(
-                        job_title=job['job_title'],
-                        job_id=job['job_id'],
-                        location=job['location'],
-                        description=job['description']
+                    job_object = Job(
+                        title = j["job_title"],
+                        job_id = j["job_id"],
+                        location = j["location"],
+                        description = j["description"],
                     )
+                    json_details = json.loads(j["details"])
+                    match_score = analyze_and_score_job(job_object,json_details)
                     
-                    status = update_job_match_score(db, job['job_id'], match_score)
+                    status = update_job_match_score(db, j['job_id'], match_score)
                     
                     print(f"  → Score: {match_score.overall_score}/100 | Level: {match_score.match_level}")
                     print(f"  → Status: {status}")
                     
                 except Exception as e:
-                    db.log(f"Error analyzing job {job['job_id']}: {e}", "ERROR")
-                    db.update_job_status(job['job_id'], "error")
+                    db.log(f"Error analyzing job {j['job_id']}: {e}", "ERROR")
+                    db.update_job_status(j['job_id'], "error")
                 
-                time.sleep(1)
-        
-        
+                time.sleep(1) 
     except Exception as e:
         print(f"Error: {e}")
         import traceback
